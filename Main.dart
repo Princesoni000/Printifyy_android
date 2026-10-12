@@ -5,6 +5,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import 'package:razorpay_flutter/razorpay_flutter.dart';
 import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
 import 'dart:io';
@@ -71,9 +72,141 @@ class ProductPage extends StatefulWidget { final Map<String,dynamic> product; co
 class _ProductPageState extends State<ProductPage>{String size='M',colorName='Black';final text=TextEditingController();String? imagePath;bool busy=false;Future<void> chooseImage()async{final x=await ImagePicker().pickImage(source:ImageSource.gallery,imageQuality:85);if(x!=null)setState(()=>imagePath=x.path);}Future<void> add()async{final p=widget.product;final stock=(p['stock'] as num?)?.toInt()??0;if(stock<1){ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('Currently out of stock')));return;}if(imagePath!=null){setState(()=>busy=true);try{final uid=FirebaseAuth.instance.currentUser!.uid;final ref=FirebaseStorage.instance.ref('artwork/$uid/${const Uuid().v4()}');await ref.putFile(File(imagePath!));final url=await ref.getDownloadURL();p['artworkUrl']=url;}catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Upload failed: $e')));setState(()=>busy=false);return;}setState(()=>busy=false);}p['customText']=text.text.trim();p['selectedSize']=size;p['selectedColor']=colorName; if(context.mounted){context.read<CartModel>().add(p);ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('Added to cart')));}}
 @override Widget build(BuildContext context){final p=widget.product;final url=p['imageUrl'] as String?;return Scaffold(appBar:AppBar(title:Text('${p['name']}')),body:ListView(padding:const EdgeInsets.all(16),children:[AspectRatio(aspectRatio:1,child:Container(color:const Color(0xFFEDE9E3),child:url==null||url.isEmpty?const Icon(Icons.checkroom,size:100):Image.network(url,fit:BoxFit.contain))),const SizedBox(height:16),Text('${p['name']}',style:Theme.of(context).textTheme.headlineSmall),Text('鈧�${p['price']}',style:const TextStyle(fontSize:23,fontWeight:FontWeight.w800)),const SizedBox(height:8),Text('${p['description']??'Make it yours with custom text or artwork.'}'),const SizedBox(height:14),const Text('Size'),Wrap(spacing:8,children:(p['sizes'] as List? ?? ['S','M','L','XL']).map((s)=>ChoiceChip(label:Text('$s'),selected:size=='$s',onSelected:(_)=>setState(()=>size='$s'))).toList()),const SizedBox(height:10),const Text('Colour'),Wrap(spacing:8,children:(p['colors'] as List? ?? ['Black','White']).map((s)=>ChoiceChip(label:Text('$s'),selected:colorName=='$s',onSelected:(_)=>setState(()=>colorName='$s'))).toList()),const SizedBox(height:12),TextField(controller:text,decoration:const InputDecoration(labelText:'Custom name/text (optional)',border:OutlineInputBorder())),const SizedBox(height:10),OutlinedButton.icon(onPressed:chooseImage,icon:const Icon(Icons.upload_file),label:Text(imagePath==null?'Upload your photo/logo':'Artwork selected')),const SizedBox(height:12),FilledButton(onPressed:busy?null:add,child:Text(busy?'Uploading鈥�':'Add to cart'))]));}}
 
-class CartPage extends StatefulWidget {const CartPage({super.key});@override State<CartPage> createState()=>_CartPageState();}
-class _CartPageState extends State<CartPage>{final address=TextEditingController();bool busy=false;String payment='COD';Future<void> checkout()async{final cart=context.read<CartModel>();if(cart.items.isEmpty)return;if(address.text.trim().length<10){ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('Enter a complete delivery address')));return;}setState(()=>busy=true);try{final fn=FirebaseFunctions.instance.httpsCallable('createOrder');final res=await fn.call({'items':cart.items.values.map((p)=>{'productId':p['id'],'quantity':p['qty'],'size':p['selectedSize'],'color':p['selectedColor'],'customText':p['customText'],'artworkUrl':p['artworkUrl']}).toList(),'address':address.text.trim(),'paymentMethod':payment});final orderId=res.data['orderId'] as String;cart.clear();if(mounted)await showDialog(context:context,builder:(_)=>AlertDialog(title:const Text('Order placed'),content:Text('Order ID: $orderId\nStatus: awaiting payment / confirmation'),actions:[TextButton(onPressed:()=>Navigator.pop(context),child:const Text('OK'))]));}on FirebaseFunctionsException catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.message??'Checkout failed')));}catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Checkout failed: $e')));}finally{if(mounted)setState(()=>busy=false);}}
-@override Widget build(BuildContext context){final cart=context.watch<CartModel>();return Scaffold(appBar:AppBar(title:const Text('Your cart')),body:cart.items.isEmpty?const Center(child:Text('Your cart is empty')):ListView(padding:const EdgeInsets.all(16),children:[...cart.items.values.map((p)=>Card(child:ListTile(title:Text('${p['name']}'),subtitle:Text('${p['selectedSize']??''} 路 ${p['selectedColor']??''} 路 Qty ${p['qty']}\n鈧�${p['price']} each'),isThreeLine:true,trailing:IconButton(onPressed:()=>cart.remove(p['id']),icon:const Icon(Icons.delete_outline))))),const Divider(),Text('Subtotal: 鈧�${cart.total.toStringAsFixed(2)}',style:const TextStyle(fontWeight:FontWeight.w800,fontSize:20)),const SizedBox(height:16),TextField(controller:address,maxLines:3,decoration:const InputDecoration(labelText:'Full delivery address',hintText:'House, street, area, city, state, PIN code',border:OutlineInputBorder())),const SizedBox(height:12),const Text('Payment method'),RadioListTile<String>(value:'COD',groupValue:payment,onChanged:(v)=>setState(()=>payment=v!),title:const Text('Cash on Delivery')),RadioListTile<String>(value:'RAZORPAY',groupValue:payment,onChanged:(v)=>setState(()=>payment=v!),title:const Text('Online payment (Razorpay setup required)')),FilledButton(onPressed:busy?null:checkout,child:Text(busy?'Placing order鈥�':'Place order'))]));}}
+class CartPage extends StatefulWidget { const CartPage({super.key}); @override State<CartPage> createState() => _CartPageState(); }
+class _CartPageState extends State<CartPage> {
+  final address = TextEditingController();
+  late final Razorpay _razorpay;
+  bool busy = false;
+  String payment = 'COD';
+  String? _pendingOrderId;
+
+  @override
+  void initState() {
+    super.initState();
+    _razorpay = Razorpay()
+      ..on(Razorpay.EVENT_PAYMENT_SUCCESS, _handlePaymentSuccess)
+      ..on(Razorpay.EVENT_PAYMENT_ERROR, _handlePaymentError);
+  }
+
+  @override
+  void dispose() {
+    _razorpay.clear();
+    address.dispose();
+    super.dispose();
+  }
+
+  List<Map<String, dynamic>> _checkoutItems(CartModel cart) => cart.items.values.map((p) => {
+    'productId': p['id'], 'quantity': p['qty'], 'size': p['selectedSize'],
+    'color': p['selectedColor'], 'customText': p['customText'], 'artworkUrl': p['artworkUrl'],
+  }).toList();
+
+  Future<void> checkout() async {
+    final cart = context.read<CartModel>();
+    if (cart.items.isEmpty) return;
+    if (address.text.trim().length < 10) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Enter a complete delivery address')));
+      return;
+    }
+    setState(() => busy = true);
+    try {
+      if (payment == 'COD') {
+        final res = await FirebaseFunctions.instance.httpsCallable('createOrder').call({
+          'items': _checkoutItems(cart), 'address': address.text.trim(), 'paymentMethod': 'COD',
+        });
+        final orderId = res.data['orderId'] as String;
+        cart.clear();
+        if (mounted) await showDialog(context: context, builder: (_) => AlertDialog(
+          title: const Text('Order placed'),
+          content: Text('Order ID: ' + orderId + '\nPayment: Cash on Delivery'),
+          actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK'))],
+        ));
+        return;
+      }
+      final res = await FirebaseFunctions.instance.httpsCallable('createRazorpayOrder').call({
+        'items': _checkoutItems(cart), 'address': address.text.trim(),
+      });
+      final data = Map<String, dynamic>.from(res.data as Map);
+      _pendingOrderId = data['orderId'] as String;
+      if (!mounted) return;
+      _razorpay.open({
+        'key': data['keyId'], 'order_id': data['razorpayOrderId'], 'amount': data['amount'],
+        'currency': data['currency'] ?? 'INR', 'name': 'Printify',
+        'description': 'Custom printed products',
+        'prefill': {'email': FirebaseAuth.instance.currentUser?.email ?? ''},
+        'notes': {'internalOrderId': _pendingOrderId},
+        'retry': {'enabled': true, 'max_count': 2},
+      });
+    } on FirebaseFunctionsException catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message ?? 'Checkout failed')));
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Checkout failed: ' + e.toString())));
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> _handlePaymentSuccess(PaymentSuccessResponse response) async {
+    final internalOrderId = _pendingOrderId;
+    if (internalOrderId == null || response.orderId == null || response.paymentId == null || response.signature == null) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Payment response incomplete. Check My Orders before trying again.')));
+      return;
+    }
+    setState(() => busy = true);
+    try {
+      final result = await FirebaseFunctions.instance.httpsCallable('verifyRazorpayPayment').call({
+        'orderId': internalOrderId, 'razorpayOrderId': response.orderId,
+        'razorpayPaymentId': response.paymentId, 'razorpaySignature': response.signature,
+      });
+      final data = result.data;
+      final needsReview = data is Map && data['needsReview'] == true;
+      context.read<CartModel>().clear();
+      _pendingOrderId = null;
+      if (mounted) await showDialog(context: context, builder: (_) => AlertDialog(
+        title: Text(needsReview ? 'Payment received — order under review' : 'Payment successful'),
+        content: Text(needsReview
+          ? 'Payment was confirmed, but stock changed during checkout. Order ID: ' + internalOrderId + '. Please contact the shop before placing another order.'
+          : 'Your order is confirmed. Order ID: ' + internalOrderId),
+        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK'))],
+      ));
+    } on FirebaseFunctionsException catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Payment may have succeeded, but order confirmation is pending. Check My Orders before retrying. ' + (e.message ?? ''))));
+    } catch (_) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Payment may have succeeded, but confirmation is pending. Check My Orders before retrying.')));
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  void _handlePaymentError(PaymentFailureResponse response) {
+    _pendingOrderId = null;
+    if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Payment was not completed. If your account was charged, check My Orders before retrying.')));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cart = context.watch<CartModel>();
+    return Scaffold(
+      appBar: AppBar(title: const Text('Your cart')),
+      body: cart.items.isEmpty ? const Center(child: Text('Your cart is empty')) : ListView(padding: const EdgeInsets.all(16), children: [
+        ...cart.items.values.map((p) => Card(child: ListTile(
+          title: Text((p['name'] ?? 'Product').toString()),
+          subtitle: Text((p['selectedSize'] ?? '').toString() + ' • ' + (p['selectedColor'] ?? '').toString() + ' • Qty ' + p['qty'].toString() + '\n₹' + p['price'].toString() + ' each'),
+          isThreeLine: true,
+          trailing: IconButton(onPressed: () => cart.remove(p['id']), icon: const Icon(Icons.delete_outline)),
+        ))),
+        const Divider(),
+        Text('Subtotal: ₹' + cart.total.toStringAsFixed(2), style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 20)),
+        const SizedBox(height: 16),
+        TextField(controller: address, maxLines: 3, decoration: const InputDecoration(labelText: 'Full delivery address', hintText: 'House, street, area, city, state, PIN code', border: OutlineInputBorder())),
+        const SizedBox(height: 12),
+        const Text('Payment method'),
+        RadioListTile<String>(value: 'COD', groupValue: payment, onChanged: (v) => setState(() => payment = v!), title: const Text('Cash on Delivery')),
+        RadioListTile<String>(value: 'RAZORPAY', groupValue: payment, onChanged: (v) => setState(() => payment = v!), title: const Text('Online payment (Razorpay)')),
+        FilledButton(onPressed: busy ? null : checkout, child: Text(busy ? 'Please wait…' : payment == 'COD' ? 'Place order' : 'Pay securely')),
+      ]),
+    );
+  }
+}
 
 class CustomRequestPage extends StatefulWidget{const CustomRequestPage({super.key});@override State<CustomRequestPage> createState()=>_CustomRequestPageState();}
 class _CustomRequestPageState extends State<CustomRequestPage>{String type='T-shirts',position='Front';final notes=TextEditingController();String? path;bool busy=false;Future<void> upload()async{final x=await ImagePicker().pickImage(source:ImageSource.gallery,imageQuality:85);if(x!=null)setState(()=>path=x.path);}Future<void> send()async{setState(()=>busy=true);try{final uid=FirebaseAuth.instance.currentUser!.uid;String? url;if(path!=null){final ref=FirebaseStorage.instance.ref('artwork/$uid/${const Uuid().v4()}');await ref.putFile(File(path!));url=await ref.getDownloadURL();}await FirebaseFirestore.instance.collection('customRequests').add({'userId':uid,'garmentType':type,'printPosition':position,'notes':notes.text.trim(),'uploadedImageUrl':url,'status':'pending','createdAt':FieldValue.serverTimestamp()});if(mounted){ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('Request sent to the printing team')));Navigator.pop(context);}}catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('Could not send request: $e')));}finally{if(mounted)setState(()=>busy=false);}}
